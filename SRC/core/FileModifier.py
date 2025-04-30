@@ -39,42 +39,41 @@ class FileModifier:
         Modifies HRU.con by setting specific ID rows to 1 and moving them to the top,
         while preserving the exact format of all values.
         """
-
+    
         path = os.path.join(self.txtinout_dir, "HRU.con")
-
+    
         # 1) Read with the first line as header
         df = pd.read_csv(path, delim_whitespace=True, dtype=str, header=1)
-
+    
         # 2) Find the ID column (case‐insensitive)
         id_col = next((c for c in df.columns if c.lower() == 'id'), None)
         if not id_col:
             print("Error: No 'ID' column found in HRU.con.")
-
             return
-
+    
         # 3) Extract & modify the matching rows
         modified_rows = []
-
         for fid in filter_ids:
             row = df[df[id_col] == str(fid)].copy()
             if row.empty:
                 print(f"No row with ID={fid}")
-
                 continue
             row[id_col] = '1'
             modified_rows.append(row)
-
+    
         # 4) Re‐assemble: modified rows at top, then the rest
         remaining = df[~df[id_col].isin(map(str, filter_ids))]
         out = pd.concat(modified_rows + [remaining], ignore_index=True)
-
-
+    
+        # ** Replace NaN with empty strings to avoid issues **
+        out = out.fillna('')
+    
         # 5) Compute column widths (cast all cells to str to avoid float‐len issues)
         column_widths = [
             max(len(col), out[col].astype(str).map(len).max())
             for col in out.columns
         ]
-
+    
         # 6) Write back, preserving formatting
         with open(path, 'w') as f:
             f.write(' '.join(out.columns) + '\n')
@@ -82,7 +81,7 @@ class FileModifier:
                 parts = row.astype(str).tolist()
                 line = ' '.join(val.rjust(w) for val, w in zip(parts, column_widths))
                 f.write(line + '\n')
-
+    
         print("HRU.con updated successfully.")
 
     def modify_object_cnt(self, hru_count):
