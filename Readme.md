@@ -1,4 +1,4 @@
-# **SWAT+ TxtInOut Processor**
+# **SWAT+ HRU Processor**
 
 ## **Project Description**
 This repository contains a GUI-based tool designed to streamline the processing and modification of SWAT+ TxtInOut files. It includes features for filtering Hydrologic Response Units (HRUs), modifying key SWAT+ files, and optionally running simulations using user-selected SWAT+ executables. The tool aims to make SWAT+ workflows more accessible and efficient for users.
