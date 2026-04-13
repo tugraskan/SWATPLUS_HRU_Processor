@@ -70,9 +70,16 @@ def setup_gui(root, controller):
     Tooltip(run_toggle, "Enable or disable SWAT+ simulation after modification.")  # Tooltip for run simulation toggle
     controller.run_simulation_var = run_simulation_var
 
+    # Keep Routing Toggle
+    keep_routing_var = tk.BooleanVar(value=False)
+    routing_toggle = ToggleSwitch(root, "Keep Routing", keep_routing_var)
+    routing_toggle.grid(row=7, column=1, padx=10, pady=10)
+    Tooltip(routing_toggle, "When ON, preserves the downstream routing chain (channels, aquifers, reservoirs, etc.) instead of isolating HRUs only.")
+    controller.keep_routing_var = keep_routing_var
+
     # Modify HRU Button
     run_button = tk.Button(root, text="Modify HRU", command=controller.run_script)
-    run_button.grid(row=8, column=1, padx=10, pady=20)
+    run_button.grid(row=9, column=1, padx=10, pady=20)
     Tooltip(run_button, "Click to modify HRUs and optionally run the simulation.")  # Tooltip for the modify HRU button
 
 def create_executable_popup(root, exe_files, on_selection):

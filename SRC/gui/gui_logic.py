@@ -31,6 +31,7 @@ class SWATController:
         self.root = root
         self.file_modifier = None  # Object to handle file modifications
         self.selected_exe = None  # Store the selected `.exe` file
+        self.exe_files = []
 
     def browse_directory(self):
         """
@@ -50,6 +51,7 @@ class SWATController:
             directory (str): Path to the selected directory.
         """
         self.file_modifier = FileModifier(directory)
+        self.selected_exe = None
         try:
             # Initialize TxtinoutReader and retrieve `.exe` files
             txtinout_reader = TxtinoutReader(directory)
@@ -62,7 +64,7 @@ class SWATController:
             self.label_total_hrus.config(text=f"Total HRUs: {total_hrus}")
         except Exception as e:
             messagebox.showerror("File Error", str(e))
-            self.exe_files = None  # Reset `.exe` files on error
+            self.exe_files = []  # Reset `.exe` files on error
 
     def toggle_hru_mode(self):
         """
@@ -152,6 +154,7 @@ class SWATController:
         src_dir = self.src_dir_entry.get()
         filter_ids_input = self.filter_id_entry.get()
         run_simulation = self.run_simulation_var.get()
+        keep_routing = self.keep_routing_var.get()
 
         if not os.path.isdir(src_dir):  # Validate source directory
             messagebox.showerror("Invalid Directory", "Please select a valid source directory.")
@@ -192,7 +195,8 @@ class SWATController:
                 src_dir=src_dir,
                 filter_ids=filter_ids,
                 run_simulation=run_simulation,
-                exe_path=self.selected_exe  # Pass the selected executable
+                exe_path=self.selected_exe,
+                keep_routing=keep_routing,
             )
             messagebox.showinfo("Success", "SWAT+ files processed successfully.")
         except Exception as e:
