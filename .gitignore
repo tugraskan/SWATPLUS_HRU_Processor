@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.pytest_tmp/
+pytest-cache-files-*/
+pytest_tmp_manual/
+test_workspaces/
+.venv/
+build/
+dist/
+swat_src/
+*.spec~
+
+# SWAT+ generated outputs
+*.out
+*.fin
+*.sqlite
+*.db
+*.log
+*.pid
+*.tmp
+fort.*
+*_aa.txt
+*_mon.txt
+*_yr.txt

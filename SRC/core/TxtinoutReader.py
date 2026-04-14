@@ -4,7 +4,10 @@ from core.FileReader import FileReader
 import shutil
 import fnmatch
 import multiprocessing
-import tqdm
+try:
+    import tqdm
+except ImportError:
+    tqdm = None
 from pathlib import Path
 import datetime
 from typing import List, Dict, Tuple, Optional
@@ -36,19 +39,13 @@ class TxtinoutReader:
 
         path = Path(path).resolve()
 
-        # Collect all executables
-        executables = [file for file in os.listdir(path) if file.endswith(".exe")]
-
-        if len(executables) == 0:
-            raise FileNotFoundError(".exe file not found in the folder")
-        elif len(executables) == 1:
-            # Only one executable, set it directly
-            self.swat_exe_paths = path / executables[0]
-            self.swat_exe_path = path / executables[0]
-        else:
-            # Store multiple executables and let the GUI handle the selection
-            self.swat_exe_paths = [path / exe for exe in executables]
-            self.swat_exe_path = None  # Will be set later by user choice
+        # Collect executables without requiring one for read/modify workflows.
+        self.swat_exe_paths = [
+            path / file for file in os.listdir(path) if file.lower().endswith(".exe")
+        ]
+        self.swat_exe_path = (
+            self.swat_exe_paths[0] if len(self.swat_exe_paths) == 1 else None
+        )
 
   
         # find parent directory
@@ -77,17 +74,14 @@ class TxtinoutReader:
         # Update root folder
         self.root_folder = new_path
 
-        # Find all executables in the new directory
-        self.swat_exe_paths = [new_path / exe for exe in os.listdir(new_path) if exe.endswith(".exe")]
-
-        # Handle single or multiple executables
-        if len(self.swat_exe_paths) == 0:
-            self.swat_exe_path = None
-            raise FileNotFoundError(f"No executables found in the directory: {new_path}")
-        elif len(self.swat_exe_paths) == 1:
-            self.swat_exe_path = self.swat_exe_paths[0]
-        else:
-            self.swat_exe_path = None  # Let the user select if there are multiple executables
+        self.swat_exe_paths = [
+            new_path / exe
+            for exe in os.listdir(new_path)
+            if exe.lower().endswith(".exe")
+        ]
+        self.swat_exe_path = (
+            self.swat_exe_paths[0] if len(self.swat_exe_paths) == 1 else None
+        )
 
     def _build_line_to_add(self, obj: str, daily: bool, monthly: bool, yearly: bool, avann: bool) -> str:
         """
@@ -306,38 +300,49 @@ class TxtinoutReader:
     if overwrite = False, txtinout folder will be copied to a new folder inside dir
     """
 
-    def copy_swat(src_dir, dest_dir, exclude_suffixes=None):
-        """Copies only files from src_dir to dest_dir, excluding all folders and specified suffixes."""
+    def copy_swat(src_dir, dest_dir, exclude_suffixes=None, keep_routing=False):
+        """
+        Creates a lightweight working copy of a TxtInOut directory.
 
-        # Ensure the source directory exists
+        Copies top-level input files and excludes common SWAT+ generated output.
+        Hard links are intentionally avoided because SWAT+ can overwrite output
+        files in place, and hard-linked output would mutate the source run too.
+        """
         if not os.path.exists(src_dir):
-            print(f"Source directory {src_dir} does not exist.")
-            return
+            raise FileNotFoundError(f"Source directory {src_dir} does not exist.")
 
-        # Remove destination directory if it exists to prevent duplication
         if os.path.exists(dest_dir):
             shutil.rmtree(dest_dir)
 
-        # Set file suffixes to exclude
         if exclude_suffixes is None:
-            exclude_suffixes = ['*.txt', '*.csv']
+            exclude_suffixes = [
+                '*.txt',
+                '*.csv',
+                '*.out',
+                '*.fin',
+                '*.sqlite',
+                '*.db',
+                '*.log',
+                '*.pid',
+                'fort.*',
+            ]
 
-        # Only walk through the top-level directory without descending into subdirectories
-        for root, dirs, files in os.walk(src_dir):
-            # Exclude all folders by clearing the dirs list
-            dirs[:] = []
+        os.makedirs(dest_dir, exist_ok=True)
 
-            # Ensure the destination directory exists
-            os.makedirs(dest_dir, exist_ok=True)
+        # Only process top-level files (no subdirectories)
+        for file_name in os.listdir(src_dir):
+            src_file = os.path.join(src_dir, file_name)
+            if not os.path.isfile(src_file):
+                continue
+            lower_name = file_name.lower()
+            if any(fnmatch.fnmatch(lower_name, pattern.lower()) for pattern in exclude_suffixes):
+                continue
 
-            # Copy files, excluding those that match any of the specified suffix patterns
-            for file_name in files:
-                if not any(fnmatch.fnmatch(file_name, pattern) for pattern in exclude_suffixes):
-                    src_file = os.path.join(root, file_name)
-                    dest_file = os.path.join(dest_dir, file_name)
-                    shutil.copy2(src_file, dest_file)  # Use copy2 to retain metadata
+            dest_file = os.path.join(dest_dir, file_name)
 
-        print("Successfully copied only files from the root, omitting all folders and specified files.")
+            shutil.copy2(src_file, dest_file)
+
+        print("Working copy created.")
 
     def _run_swat(self, show_output: bool = True) -> None:
         """
@@ -353,9 +358,12 @@ class TxtinoutReader:
         # Run simulation
         swat_exe_path = self.swat_exe_path
 
-        os.chdir(self.root_folder)
-
-        with subprocess.Popen(swat_exe_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+        with subprocess.Popen(
+            [str(swat_exe_path)],
+            cwd=str(self.root_folder),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        ) as process:
             # Read and print the output while it's being produced
             while True:
                 # Read a line of output
@@ -367,7 +375,7 @@ class TxtinoutReader:
 
                 # Decode the output using 'latin-1' encoding
                 try:
-                    output = raw_output.decode('latin-1').strip()
+                    output = raw_output.decode('latin-1', errors='replace').strip()
                 except UnicodeDecodeError:
                     # Handle decoding errors here (e.g., skip or replace invalid characters)
                     continue
@@ -375,6 +383,9 @@ class TxtinoutReader:
                 # Print the decoded output if needed
                 if output and show_output:
                     print(output)
+
+            if process.returncode != 0:
+                raise RuntimeError(f"SWAT+ exited with code {process.returncode}.")
 
     """
     params --> {filename: (id_col, [(id, col, value)])}
@@ -436,23 +447,24 @@ class TxtinoutReader:
         print(f"Simulation directory: {self.root_folder}")
 
         try:
-            # Change to the directory where the simulation will run
-            os.chdir(self.root_folder)
-
             # Run the executable
             with subprocess.Popen(
                 [str(self.swat_exe_path)],
+                cwd=str(self.root_folder),
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.STDOUT
             ) as process:
                 while True:
                     raw_output = process.stdout.readline()
                     if raw_output == b'' and process.poll() is not None:
                         break
 
-                    output = raw_output.decode('latin-1').strip()
+                    output = raw_output.decode('latin-1', errors='replace').strip()
                     if output and show_output:
                         print(output)
+
+                if process.returncode != 0:
+                    raise RuntimeError(f"SWAT+ exited with code {process.returncode}.")
 
             print("SWAT+ simulation completed successfully.")
         except Exception as e:
@@ -535,7 +547,10 @@ class TxtinoutReader:
 
             results_ret = []
 
-            for i in tqdm.tqdm(range(len(params))):
+            iterator = range(len(params))
+            if tqdm is not None:
+                iterator = tqdm.tqdm(iterator)
+            for i in iterator:
                 results_ret.append(self.copy_and_run(dir=dir,
                                                      overwrite=False,
                                                      params=params[i],
