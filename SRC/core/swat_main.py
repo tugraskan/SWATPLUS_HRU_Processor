@@ -3,10 +3,9 @@ from datetime import datetime
 from pathlib import Path
 from core.TxtinoutReader import TxtinoutReader
 from core.FileModifier import FileModifier
-from core.RoutingTracer import RoutingTracer
 
 
-def main(src_dir=None, filter_ids=None, run_simulation=False, exe_path=None, keep_routing=False):
+def main(src_dir=None, filter_ids=[6], run_simulation=False, exe_path=None):
     """
     Main function for SWAT+ TxtInOut processing and simulation.
 
@@ -15,20 +14,12 @@ def main(src_dir=None, filter_ids=None, run_simulation=False, exe_path=None, kee
     - filter_ids (list[int]): List of HRU IDs to filter.
     - run_simulation (bool): Whether to run the SWAT+ simulation.
     - exe_path (str): Path to the SWAT+ executable file (required if run_simulation=True).
-    - keep_routing (bool): If True, preserve the downstream routing chain.
     """
-    if filter_ids is None:
-        filter_ids = [6]
-
     # Validate the input source directory and HRU IDs
     if src_dir is None or not os.path.isdir(src_dir):
         raise ValueError("Please provide a valid source directory.")  # Ensure a valid directory is provided
     if not all(isinstance(i, int) for i in filter_ids):
         raise ValueError("Filter IDs must be integers.")  # Ensure all filter IDs are integers
-    if not filter_ids:
-        raise ValueError("Please provide at least one HRU ID.")
-    if any(i <= 0 for i in filter_ids):
-        raise ValueError("Filter IDs must be positive integers.")
 
     # Prepare destination folder name based on the HRU IDs or current timestamp
     dest_folder_name = (
@@ -38,29 +29,13 @@ def main(src_dir=None, filter_ids=None, run_simulation=False, exe_path=None, kee
     dest_dir = Path(src_dir) / dest_folder_name  # Destination directory path
 
     # Copy source directory contents to the destination directory
-    TxtinoutReader.copy_swat(src_dir, dest_dir, keep_routing=keep_routing)
+    TxtinoutReader.copy_swat(src_dir, dest_dir)
 
-    if keep_routing:
-        # Routing-aware mode: trace downstream chain, filter all object types
-        tracer = RoutingTracer(dest_dir)
-        tracer.trace_and_filter(filter_ids)
-    else:
-        # Simple isolation mode: keep only HRUs, nullify everything else
-        fm = FileModifier(dest_dir)
-        props_ids = fm.modify_hru_con(filter_ids)
-        fm.modify_hru_data(props_ids if props_ids else filter_ids)
-        fm.modify_secondary_references()
-        fm.modify_object_cnt(len(filter_ids))
-        fm.modify_file_cio()
-        fm.disable_print_objects({
-            "lsunit_wb",
-            "lsunit_nb",
-            "lsunit_ls",
-            "lsunit_pw",
-            "ru",
-            "ru_salt",
-            "ru_cs",
-        })
+    # Initialize FileModifier for the destination directory and modify SWAT+ input files
+    fm = FileModifier(dest_dir)
+    fm.modify_hru_con(filter_ids)  # Modify HRU.con file with specified HRU IDs
+    fm.modify_object_cnt(len(filter_ids))  # Update object.cnt file based on the number of HRUs
+    fm.modify_file_cio()  # Update file.cio for the simulation setup
 
     # If simulation is enabled, set up and run the simulation
     if run_simulation:

@@ -1,14 +1,6 @@
-from __future__ import annotations
-
-try:
-    import pandas as pd
-except ImportError:
-    pd = None
+import pandas as pd
 import warnings
-try:
-    import dask.dataframe as dd
-except ImportError:
-    dd = None
+import dask.dataframe as dd
 from pathlib import Path
 from typing import Union, List, Dict, Literal, Optional
 import os
@@ -48,8 +40,6 @@ def read_csv(
     '''
 
     if mode == 'dask':
-        if dd is None:
-            raise ImportError("dask is not installed")
         df = dd.read_csv(
             path,
             sep=separator,
@@ -70,8 +60,6 @@ def read_csv(
         return df.compute()
 
     elif mode == 'pandas':
-        if pd is None:
-            raise ImportError("pandas is not installed")
         df = pd.read_csv(
             path,
             sep=separator,
@@ -189,7 +177,7 @@ class FileReader:
                                                 raise e
 
         # check if df is a pandas dataframe
-        if pd is None or not isinstance(df, pd.DataFrame):
+        if not isinstance(df, pd.DataFrame):
             raise TypeError("Something went wrong!")
 
         df.columns = df.columns.str.replace(' ', '')
