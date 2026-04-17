@@ -96,6 +96,7 @@ routing_unit rout_unit.def rout_unit.ele rout_unit.rtu rout_unit.dr
 hru hru-data.hru null
 regions ls_unit.ele ls_unit.def
 water_rights water_allocation.wro element.wro water_rights.wro
+link chan-surf.lin aqu_cha.lin
 """
     )
     (path / "print.prt").write_text(
@@ -233,9 +234,22 @@ def test_keep_routing_main_preserves_routing_unit_print_outputs(work_dir):
         assert rows[name] == ["n", "y", "y", "y"]
 
     counts = row_by_header(output_dir / "object.cnt")
-    assert counts["hru"] == "1"
+    assert counts["hru"] == "2"
     assert counts["rtu"] == "1"
-    assert counts["lcha"] == "1"
+    assert counts["lcha"] == "2"
+
+    hru_lines = (output_dir / "hru.con").read_text().splitlines()
+    assert [line.split()[0] for line in hru_lines[2:]] == ["1", "2"]
+
+    ru_def_fields = (output_dir / "rout_unit.def").read_text().splitlines()[2].split()
+    assert ru_def_fields[:5] == ["1", "rtu010", "2", "1", "-2"]
+
+    lsu_def_fields = (output_dir / "ls_unit.def").read_text().splitlines()[3].split()
+    assert lsu_def_fields[:6] == ["1", "rtu010", "30.0", "2", "1", "-2"]
+
+    cio = (output_dir / "file.cio").read_text()
+    assert "chan-surf.lin" not in cio
+    assert "aqu_cha.lin" not in cio
 
 
 def test_object_count_helper_updates_routing_counts_by_header(work_dir):
@@ -252,6 +266,24 @@ def test_object_count_helper_updates_routing_counts_by_header(work_dir):
     assert counts["rtu"] == "1"
     assert counts["lcha"] == "3"
     assert counts["aqu"] == "1"
+
+
+def test_rout_unit_rtu_define_pointer_is_remapped(work_dir):
+    write_minimal_txtinout(work_dir)
+    (work_dir / "rout_unit.rtu").write_text(
+        """rout_unit.rtu test
+id name def dlr topo field
+5 ru005 5 null topo005 field005
+9 ru009 9 null topo009 field009
+"""
+    )
+
+    modifier = FileModifier(work_dir)
+    modifier.modify_rout_unit_rtu({5: 1})
+
+    lines = (work_dir / "rout_unit.rtu").read_text().splitlines()
+    assert len(lines) == 3
+    assert lines[2].split()[:3] == ["1", "ru005", "1"]
 
 
 def test_txtinout_reader_does_not_require_exe_and_copy_excludes_outputs(work_dir):
@@ -280,3 +312,4 @@ def test_routing_unit_element_ranges_expand_like_swat(work_dir):
 
     assert tracer._expand_element_tokens(["302", "-303", "400"]) == [302, 303, 400]
     assert tracer._expand_element_tokens(["285"]) == [285]
+    assert tracer._compress_element_ids([1, 2, 3, 5, 7, 8]) == ["1", "-3", "5", "7", "-8"]

@@ -71,7 +71,7 @@ def setup_gui(root, controller):
     controller.run_simulation_var = run_simulation_var
 
     # Keep Routing Toggle
-    keep_routing_var = tk.BooleanVar(value=False)
+    keep_routing_var = tk.BooleanVar(value=True)
     routing_toggle = ToggleSwitch(root, "Keep Routing", keep_routing_var)
     routing_toggle.grid(row=7, column=1, padx=10, pady=10)
     Tooltip(routing_toggle, "When ON, preserves the downstream routing chain (channels, aquifers, reservoirs, etc.) instead of isolating HRUs only.")

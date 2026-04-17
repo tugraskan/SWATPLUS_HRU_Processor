@@ -50,9 +50,19 @@ class RoutingTracer:
           - filters every .con / data / element file,
           - writes updated object.cnt.
         """
-        # 1. Find routing units that contain selected HRUs
+        # 1. Find routing units and full HRU closure related to selected HRUs.
+        selected_hru_ids = {int(hru_id) for hru_id in selected_hru_ids}
         ru_ids = self._find_routing_units_for_hrus(selected_hru_ids)
         print(f"Routing units containing selected HRUs: {ru_ids}")
+        closure_hru_ids = selected_hru_ids | self._find_hrus_for_routing_units(ru_ids)
+        if closure_hru_ids != selected_hru_ids:
+            print(
+                "Expanded routed HRU closure: "
+                f"{len(selected_hru_ids)} selected -> {len(closure_hru_ids)} HRU(s)"
+            )
+        outlet_ids = self._find_outlets_for_hrus(closure_hru_ids)
+        if outlet_ids:
+            print(f"Outlets matching selected HRU subbasins: {outlet_ids}")
 
         # 2. Parse all .con files → build graph  {(typ, id): [(target_typ, target_id, hyd, frac), ...]}
         graph = {}
@@ -69,14 +79,17 @@ class RoutingTracer:
 
         # 3. BFS downstream from selected HRUs and their routing units
         keep = {}  # {typ: set(ids)}
-        keep.setdefault("hru", set()).update(selected_hru_ids)
+        keep.setdefault("hru", set()).update(closure_hru_ids)
         keep.setdefault("ru", set()).update(ru_ids)
+        keep.setdefault("out", set()).update(outlet_ids)
 
         queue = deque()
-        for hid in selected_hru_ids:
+        for hid in closure_hru_ids:
             queue.append(("hru", hid))
         for rid in ru_ids:
             queue.append(("ru", rid))
+        for outlet_id in outlet_ids:
+            queue.append(("out", outlet_id))
 
         visited = set(queue)
         while queue:
@@ -118,12 +131,25 @@ class RoutingTracer:
                     # Filter data file by original props values (cross-references),
                     # NOT by object IDs — props may differ from IDs.
                     filter_ids_for_data = original_props if original_props else kept_ids
-                    data_map = {old: new for new, old in enumerate(sorted(filter_ids_for_data), start=1)}
-                    self._filter_data_file(data_path, filter_ids_for_data, data_map)
+                    if typ == "ru":
+                        self._filter_rout_unit_rtu_data(data_path, filter_ids_for_data, my_map)
+                    elif typ == "sdc":
+                        hyd_names = self._filter_channel_lte_file(
+                            data_path,
+                            filter_ids_for_data,
+                            {old: new for new, old in enumerate(sorted(filter_ids_for_data), start=1)},
+                        )
+                        hyd_path = os.path.join(self.dir, "hyd-sed-lte.cha")
+                        if os.path.isfile(hyd_path):
+                            self._filter_name_keyed_file(hyd_path, hyd_names)
+                    else:
+                        data_map = {old: new for new, old in enumerate(sorted(filter_ids_for_data), start=1)}
+                        self._filter_data_file(data_path, filter_ids_for_data, data_map)
 
         # 4b. Filter rout_unit.ele and rout_unit.def
         if "ru" in keep:
-            self._filter_rout_unit_ele(keep, id_maps)
+            ru_element_ids = self._routing_unit_element_ids(keep["ru"])
+            self._filter_rout_unit_ele(keep, id_maps, ru_element_ids)
             self._filter_rout_unit_def(keep["ru"], id_maps)
 
         # 4c. Filter ls_unit.ele/def. SWAT+ allocates lsu_elem from these
@@ -195,6 +221,34 @@ class RoutingTracer:
                 index += 1
 
         return expanded
+
+    def _compress_element_ids(self, element_ids):
+        """
+        Compress consecutive element IDs back to SWAT+ range tokens.
+
+        Definition files count range tokens, not expanded elements. For example,
+        elements 1, 2, 3 should be written as "1 -3" with ELEM_TOT = 2.
+        """
+        values = [int(element_id) for element_id in element_ids]
+        if not values:
+            return []
+
+        compressed = []
+        index = 0
+        while index < len(values):
+            start = values[index]
+            end = start
+            while index + 1 < len(values) and values[index + 1] == end + 1:
+                index += 1
+                end = values[index]
+
+            if end == start:
+                compressed.append(str(start))
+            else:
+                compressed.extend([str(start), str(-end)])
+            index += 1
+
+        return compressed
 
     def _extract_routing_targets(self, fields):
         """
@@ -272,6 +326,121 @@ class RoutingTracer:
                     ru_ids.add(ru_id)
 
         return ru_ids
+
+    def _find_hrus_for_routing_units(self, ru_ids):
+        """
+        Return all HRU IDs contained by the retained routing units.
+
+        Routed subsets need whole route-unit membership, not just the HRU(s)
+        originally requested, because route-unit definitions and fractions are
+        aggregate structures.
+        """
+        if not ru_ids:
+            return set()
+
+        def_path = os.path.join(self.dir, "rout_unit.def")
+        ele_path = os.path.join(self.dir, "rout_unit.ele")
+        if not os.path.isfile(def_path) or not os.path.isfile(ele_path):
+            return set()
+
+        ru_strs = {str(int(ru_id)) for ru_id in ru_ids}
+        element_ids = set()
+        with open(def_path, 'r') as f:
+            lines = f.readlines()
+        for line in lines[2:]:
+            fields = line.split()
+            if len(fields) < 3 or fields[0] not in ru_strs:
+                continue
+            try:
+                num_elem = int(fields[2])
+            except ValueError:
+                continue
+            element_ids.update(self._expand_element_tokens(fields[3:3 + num_elem]))
+
+        if not element_ids:
+            return set()
+
+        hru_ids = set()
+        with open(ele_path, 'r') as f:
+            lines = f.readlines()
+        for line in lines[2:]:
+            fields = line.split()
+            if len(fields) < 4:
+                continue
+            try:
+                elem_id = int(fields[0])
+                hru_id = int(fields[3])
+            except ValueError:
+                continue
+            if elem_id in element_ids and fields[2].lower() == "hru":
+                hru_ids.add(hru_id)
+
+        return hru_ids
+
+    def _find_outlets_for_hrus(self, hru_ids):
+        """
+        Find outlet objects for the subbasins containing the selected HRUs.
+
+        Some SWAT+ projects keep route-unit routing separate from the subbasin
+        outlet/channel chain. Seeding matching outlets keeps downstream outlet
+        and channel objects available in routed subsets.
+        """
+        hru_path = os.path.join(self.dir, "hru.con")
+        outlet_path = os.path.join(self.dir, "outlet.con")
+        if not os.path.isfile(hru_path) or not os.path.isfile(outlet_path):
+            return set()
+
+        hru_set = {int(hru_id) for hru_id in hru_ids}
+        selected_wst = set()
+        with open(hru_path, 'r') as f:
+            lines = f.readlines()
+        if len(lines) >= 2:
+            headers = lines[1].split()
+            id_idx = self._header_index(headers, {"id"}, 0)
+            wst_idx = self._header_index(headers, {"wst"})
+            if wst_idx is not None:
+                for line in lines[2:]:
+                    fields = line.split()
+                    if len(fields) <= max(id_idx, wst_idx):
+                        continue
+                    try:
+                        hru_id = int(fields[id_idx])
+                    except ValueError:
+                        continue
+                    if hru_id in hru_set:
+                        selected_wst.add(fields[wst_idx])
+
+        if not selected_wst:
+            return set()
+
+        outlet_ids = set()
+        with open(outlet_path, 'r') as f:
+            lines = f.readlines()
+        if len(lines) < 2:
+            return outlet_ids
+
+        headers = lines[1].split()
+        id_idx = self._header_index(headers, {"id"}, 0)
+        wst_idx = self._header_index(headers, {"wst"})
+        if wst_idx is None:
+            return outlet_ids
+
+        for line in lines[2:]:
+            fields = line.split()
+            if len(fields) <= max(id_idx, wst_idx):
+                continue
+            if fields[wst_idx] not in selected_wst:
+                continue
+            try:
+                outlet_ids.add(int(fields[id_idx]))
+            except ValueError:
+                continue
+
+        return outlet_ids
+
+    def _header_index(self, headers, names, default=None):
+        names = {name.lower() for name in names}
+        return next((i for i, header in enumerate(headers) if header.lower() in names), default)
 
     # ------------------------------------------------------------------
     #  Filtering / rewriting
@@ -428,7 +597,130 @@ class RoutingTracer:
 
         print(f"  {os.path.basename(path)}: kept {len(renumbered)} rows")
 
-    def _filter_rout_unit_ele(self, keep, id_maps):
+    def _filter_channel_lte_file(self, path, kept_ids, id_map):
+        """
+        Filter channel-lte.cha and return referenced hyd-sed-lte names.
+        """
+        with open(path, 'r') as f:
+            lines = f.readlines()
+        if len(lines) < 3:
+            return []
+
+        header = lines[0]
+        col_header = lines[1]
+        headers = col_header.split()
+        hyd_idx = self._header_index(headers, {"cha_hyd"}, 3)
+
+        kept_strs = {str(i) for i in kept_ids}
+        renumbered = []
+        hyd_names = []
+        for line in lines[2:]:
+            fields = line.split()
+            if not fields or fields[0] not in kept_strs:
+                continue
+            old_id = int(fields[0])
+            fields[0] = str(id_map[old_id])
+            if hyd_idx is not None and hyd_idx < len(fields) and fields[hyd_idx].lower() != "null":
+                hyd_names.append(fields[hyd_idx])
+            renumbered.append(fields)
+
+        with open(path, 'w') as f:
+            f.write(header)
+            f.write(col_header)
+            for row in renumbered:
+                f.write('  '.join(v.rjust(8) for v in row) + '\n')
+
+        print(f"  {os.path.basename(path)}: kept {len(renumbered)} rows")
+        return hyd_names
+
+    def _filter_name_keyed_file(self, path, kept_names):
+        kept_names = list(dict.fromkeys(kept_names))
+        if not kept_names:
+            return
+
+        with open(path, 'r') as f:
+            lines = f.readlines()
+        if len(lines) < 3:
+            return
+
+        rows_by_name = {}
+        for line in lines[2:]:
+            fields = line.split()
+            if fields:
+                rows_by_name[fields[0]] = line
+
+        with open(path, 'w') as f:
+            f.write(lines[0])
+            f.write(lines[1])
+            kept_count = 0
+            for name in kept_names:
+                row = rows_by_name.get(name)
+                if row:
+                    f.write(row)
+                    kept_count += 1
+
+        print(f"  {os.path.basename(path)}: kept {kept_count} rows")
+
+    def _filter_rout_unit_rtu_data(self, path, kept_ids, id_map):
+        """
+        Filter rout_unit.rtu rows and remap both ID and DEF pointers.
+        """
+        with open(path, 'r') as f:
+            lines = f.readlines()
+        if len(lines) < 3:
+            return
+
+        header = lines[0]
+        col_header = lines[1]
+        headers = col_header.split()
+        def_idx = self._header_index(headers, {"def", "define"}, 2)
+
+        kept_strs = {str(i) for i in kept_ids}
+        renumbered = []
+        for line in lines[2:]:
+            fields = line.split()
+            if not fields or fields[0] not in kept_strs:
+                continue
+            old_id = int(fields[0])
+            fields[0] = str(id_map[old_id])
+            if def_idx is not None and def_idx < len(fields):
+                try:
+                    old_def_id = int(fields[def_idx])
+                except ValueError:
+                    old_def_id = None
+                if old_def_id in id_map:
+                    fields[def_idx] = str(id_map[old_def_id])
+            renumbered.append(fields)
+
+        with open(path, 'w') as f:
+            f.write(header)
+            f.write(col_header)
+            for row in renumbered:
+                f.write('  '.join(v.rjust(8) for v in row) + '\n')
+
+        print(f"  {os.path.basename(path)}: kept {len(renumbered)} rows")
+
+    def _routing_unit_element_ids(self, kept_ru_ids):
+        path = os.path.join(self.dir, "rout_unit.def")
+        element_ids = set()
+        if not os.path.isfile(path):
+            return element_ids
+
+        kept_strs = {str(i) for i in kept_ru_ids}
+        with open(path, 'r') as f:
+            lines = f.readlines()
+        for line in lines[2:]:
+            fields = line.split()
+            if len(fields) < 3 or fields[0] not in kept_strs:
+                continue
+            try:
+                num_elem = int(fields[2])
+            except ValueError:
+                continue
+            element_ids.update(self._expand_element_tokens(fields[3:3 + num_elem]))
+        return element_ids
+
+    def _filter_rout_unit_ele(self, keep, id_maps, allowed_element_ids=None):
         """
         Filter rout_unit.ele to keep only elements that reference kept objects.
         Renumber element IDs sequentially, update obj_typ_no using id_maps.
@@ -447,10 +739,17 @@ class RoutingTracer:
         header = lines[0]
         col_header = lines[1]
 
+        allowed_element_ids = set(allowed_element_ids or [])
         selected = []
         for line in lines[2:]:
             fields = line.split()
             if len(fields) < 4:
+                continue
+            try:
+                old_elem_id = int(fields[0])
+            except ValueError:
+                continue
+            if allowed_element_ids and old_elem_id not in allowed_element_ids:
                 continue
             obj_typ = fields[2]
             try:
@@ -525,12 +824,13 @@ class RoutingTracer:
                 old_elements = self._expand_element_tokens(fields[3:3 + num_elem])
                 for old_elem in old_elements:
                     if old_elem in elem_map:
-                        new_elem_refs.append(str(elem_map[old_elem]))
+                        new_elem_refs.append(elem_map[old_elem])
                     # else: element was removed, skip it
 
                 # Reconstruct with updated elem count + refs
-                fields[2] = str(len(new_elem_refs))
-                fields = fields[:3] + new_elem_refs
+                compressed_refs = self._compress_element_ids(new_elem_refs)
+                fields[2] = str(len(compressed_refs))
+                fields = fields[:3] + compressed_refs
                 renumbered.append(fields)
 
         with open(path, 'w') as f:
@@ -560,6 +860,11 @@ class RoutingTracer:
         always_null = {
             "water_allocation.wro", "element.wro", "water_rights.wro",
             "object.prt",
+            # These link files carry full-model object indices. They must be
+            # filtered before use; leaving them active corrupts routed subsets.
+            "chan-surf.lin", "aqu_cha.lin",
+            # Optional object families not currently retained by the tracer.
+            "hru-lte.con", "hru-lte.hru", "gwflow.con", "aquifer2d.con",
         }
 
         # Nullify .con and data files for types NOT in keep
@@ -568,6 +873,8 @@ class RoutingTracer:
                 always_null.add(con_file)
                 if data_file:
                     always_null.add(data_file)
+                if typ == "sdc":
+                    always_null.add("hyd-sed-lte.cha")
 
         path = os.path.join(self.dir, "file.cio")
         with open(path, 'r') as f:

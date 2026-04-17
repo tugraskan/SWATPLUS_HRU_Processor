@@ -71,6 +71,31 @@ class FileModifier:
 
         return expanded
 
+    def _compress_element_ids(self, element_ids):
+        """
+        Compress consecutive element IDs back to SWAT+ range tokens.
+        """
+        values = [int(element_id) for element_id in element_ids]
+        if not values:
+            return []
+
+        compressed = []
+        index = 0
+        while index < len(values):
+            start = values[index]
+            end = start
+            while index + 1 < len(values) and values[index + 1] == end + 1:
+                index += 1
+                end = values[index]
+
+            if end == start:
+                compressed.append(str(start))
+            else:
+                compressed.extend([str(start), str(-end)])
+            index += 1
+
+        return compressed
+
     def _format_row(self, fields, width=12):
         return " ".join(str(value).rjust(width) for value in fields) + "\n"
 
@@ -391,15 +416,16 @@ class FileModifier:
                 continue
 
             old_elements = self._expand_element_tokens(fields[4:4 + elem_tot])
-            new_elements = [str(elem_map[elem]) for elem in old_elements if elem in elem_map]
+            new_elements = [elem_map[elem] for elem in old_elements if elem in elem_map]
             if not new_elements:
                 continue
 
+            compressed_elements = self._compress_element_ids(new_elements)
             new_def_id = len(renumbered) + 1
             def_map[old_def_id] = new_def_id
             fields[0] = str(new_def_id)
-            fields[3] = str(len(new_elements))
-            renumbered.append(fields[:4] + new_elements)
+            fields[3] = str(len(compressed_elements))
+            renumbered.append(fields[:4] + compressed_elements)
 
         with open(path, "w") as file:
             file.write(title)
@@ -491,15 +517,16 @@ class FileModifier:
                 continue
 
             old_elements = self._expand_element_tokens(fields[3:3 + elem_tot])
-            new_elements = [str(elem_map[elem]) for elem in old_elements if elem in elem_map]
+            new_elements = [elem_map[elem] for elem in old_elements if elem in elem_map]
             if not new_elements:
                 continue
 
+            compressed_elements = self._compress_element_ids(new_elements)
             new_ru_id = len(renumbered) + 1
             ru_map[old_ru_id] = new_ru_id
             fields[0] = str(new_ru_id)
-            fields[2] = str(len(new_elements))
-            renumbered.append(fields[:3] + new_elements)
+            fields[2] = str(len(compressed_elements))
+            renumbered.append(fields[:3] + compressed_elements)
 
         with open(path, "w") as file:
             file.write(title)
@@ -525,6 +552,8 @@ class FileModifier:
 
         title = lines[0]
         column_header = lines[1]
+        headers = column_header.split()
+        def_idx = self._header_index(headers, {"def", "define"}, 2)
         renumbered = []
 
         for line in lines[2:]:
@@ -538,6 +567,13 @@ class FileModifier:
             if old_ru_id not in ru_id_map:
                 continue
             fields[0] = str(ru_id_map[old_ru_id])
+            if def_idx is not None and def_idx < len(fields):
+                try:
+                    old_def_id = int(fields[def_idx])
+                except ValueError:
+                    old_def_id = None
+                if old_def_id in ru_id_map:
+                    fields[def_idx] = str(ru_id_map[old_def_id])
             renumbered.append(fields)
 
         with open(path, "w") as file:
